@@ -1,0 +1,266 @@
+Parameters:
+  NetworkStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the networking
+      resources, such as the VPC and subnet that will be used in this stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: ProdVpc
+
+  WebAMIId:
+    Description: >-
+      The ID of the AMI being used in the Web Tier Auto Scaliing Group
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    Default: ami-0a4bec4a240fee607
+
+  WebIAMRoleName:
+    Description: >-
+      The ARN ID of the IAM role to give the Web EC2 Instances
+    Type: String
+    Default: EC2GuestbookRole
+
+  MyDBUsername:
+    Type: String
+    Default: admin
+
+  MyDBPassword:
+    Type: String
+    Default: "CHANGEME"
+
+  DBName:
+    Type: String
+    Default: "guestbook"
+
+  AwsCognitoKey:
+    Type: String
+
+  AwsCognitoSecret:
+    Type: String
+  
+  AwsCognitoRegion:
+    Type: String
+    Default: us-east-1
+
+  AwsCognitoClientId:
+    Type: String
+    Default: 1h56uau8doogepsevpr9p3f5ls
+
+  AwsCognitoClientSecret:
+    Type: String
+    Default: kue8o2r0g9b1qvbojfjssu24poh3sj9iblkstd5dbs9p5eo088c
+
+  AwsCognitoUserPoolId:
+    Type: String
+    Default: us-east-1_0vxX6dm5I
+
+  AwsCognitoDeleteUser:
+    Type: String
+
+  envPath:
+    Type: String
+    Default: /var/www/guestbook/.env
+
+  RedisHost:
+    Type: String
+    Default: 10.0.0.80
+
+Resources:
+
+  WebELBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200'
+      Name: Web-Tier-ELB-Target1
+      Port: 80
+      Protocol: HTTP
+      VpcId: 
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-VpcId
+
+  WebELBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebELBTargetGroup
+      LoadBalancerArn:
+          Ref: WebELB
+      Port: 80
+      Protocol: HTTP
+
+  WebELB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      Name: WebELB
+      Scheme: internet-facing
+      Subnets:
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-PubSub1
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-PubSub2
+      SecurityGroups:
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-WebELBSG
+
+  WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles: 
+        - !Ref WebIAMRoleName
+
+
+  WebLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref WebAMIId
+      SecurityGroups:
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-WebSG
+      InstanceType: t2.micro
+      IamInstanceProfile: !Ref WebInstanceProfile
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            echo "" >> ${env_path}
+            echo DB_CONNECTION=mysql >> ${env_path}
+            echo DB_HOST=${DbHost} >> ${env_path}
+            echo DB_PORT=3306 >> ${env_path}
+            echo DB_DATABASE=${DBName} >> ${env_path}
+            echo DB_USERNAME=${MyDBUsername} >> ${env_path}
+            echo DB_PASSWORD=${MyDBPassword} >> ${env_path}
+            echo "" >> ${env_path}
+            echo REDIS_HOST=${RedisHost} >> ${env_path}
+            echo REDIS_PASSWORD=null >> ${env_path}
+            echo REDIS_PORT=6379 >> ${env_path}
+            echo "" >> ${env_path}
+            echo AWS_COGNITO_KEY=${AwsCognitoKey} >> ${env_path}
+            echo AWS_COGNITO_SECRET=${AwsCognitoSecret} >> ${env_path}
+            echo AWS_COGNITO_REGION=${AwsCognitoRegion} >> ${env_path}
+            echo AWS_COGNITO_CLIENT_ID=${AwsCognitoClientId} >> ${env_path}
+            echo AWS_COGNITO_CLIENT_SECRET=${AwsCognitoClientSecret} >> ${env_path}
+            echo AWS_COGNITO_USER_POOL_ID=${AwsCognitoUserPoolId} >> ${env_path}
+            echo AWS_COGNITO_DELETE_USER=${AwsCognitoDeleteUser} >> ${env_path}
+            echo "" >> ${env_path}
+            echo USE_SSO=true >> ${env_path}
+            mkdir /certs/
+            wget https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem -O /certs/ca.pem
+            chmod 755 /certs/ca.pem
+          - env_path: !Ref envPath
+            DbHost: !GetAtt MainDBInstance.Endpoint.Address
+            DBName: !Ref DBName
+            MyDBUsername: !Ref MyDBUsername
+            MyDBPassword: !Ref MyDBPassword
+            AwsCognitoKey: !Ref AwsCognitoKey
+            AwsCognitoSecret: !Ref AwsCognitoSecret
+            AwsCognitoRegion: !Ref AwsCognitoRegion
+            AwsCognitoClientId: !Ref AwsCognitoClientId
+            AwsCognitoClientSecret: !Ref AwsCognitoClientSecret
+            AwsCognitoUserPoolId: !Ref AwsCognitoUserPoolId
+            AwsCognitoDeleteUser: !Ref AwsCognitoDeleteUser
+            RedisHost: !Ref RedisHost
+
+  WebASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-PubSub1
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-PubSub2
+      LaunchConfigurationName: !Ref WebLaunchConfig
+      MinSize: "2"
+      MaxSize: "10"
+      DesiredCapacity: "2"
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs:
+        - !Ref WebELBTargetGroup
+
+  WebASGScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref WebASG
+      ScalingAdjustment: '1'
+
+  WebCPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '50'
+      AlarmDescription: Alarm if CPU too high or metric disappears indicating instance
+        is down
+      Period: '60'
+      AlarmActions:
+      - !Ref WebASGScaleOutPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: WebASG
+        Value:
+          Ref: WebASG
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  MainDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties: 
+      AllocatedStorage: "20"
+      DBInstanceClass: db.t2.micro
+      Engine: MySQL
+      DBSubnetGroupName:
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-DBSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue:
+            !Sub ${NetworkStackName}-DBSG
+      MasterUserPassword:
+        Ref: MyDBPassword
+      MasterUsername:
+        Ref: MyDBUsername
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      DBName: !Ref DBName
+
+  # BackupDBInstance:
+  #   Type: AWS::RDS::DBInstance
+  #   Properties: 
+  #     AllocatedStorage: "20"
+  #     DBInstanceClass: db.t2.micro
+  #     Engine: MySQL
+  #     SourceDBInstanceIdentifier: !Ref MainDBInstance
+  #     VPCSecurityGroups:
+  #       - !GetAtt DBSG.GroupId
+  #     MasterUserPassword:
+  #       Ref: MyDBPassword
+  #     MasterUsername:
+  #       Ref: MyDBUsername
+  #     AvailabilityZone: !Select [ 1, !GetAZs '' ]
+
+
+
+
+Outputs:
+  WebELBHostName:
+    Description: 'Web Tier Load Balancer Hostname'
+    Value:
+      !GetAtt WebELB.DNSName
+
+  MainDBInstance:
+    Description: "Main Db InstanceId"
+    Value: !Ref MainDBInstance
+
+  MainDBInstanceHostname:
+    Description: "Main DB Instance Hostname"
+    Value: !GetAtt MainDBInstance.Endpoint.Address
